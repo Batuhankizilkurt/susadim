@@ -58,11 +58,30 @@ function saveUsers(users) {
 
 // ---------------- API ----------------
 
+app.get("/api/send-test", async (_, res) => {
+  const subscriptions = readSubscriptions();
+
+  if (!subscriptions.length) {
+    return res.status(400).json({ ok: false, message: "kayıtlı subscription yok" });
+  }
+
+  const payload = JSON.stringify({
+    title: "Susadım",
+    body: "Test bildirimi 💧",
+    url: "/"
+  });
+
+  await Promise.allSettled(
+    subscriptions.map((sub) => webpush.sendNotification(sub, payload))
+  );
+
+  res.json({ ok: true });
+});
+
+
 app.get("/api/health", (_, res) => {
   res.json({ ok: true });
 });
-app.get("/api/send-test", async (_, res) => {
-  const users = readUsers();
 
   for (const user of users) {
     if (!user.subscription) continue;
