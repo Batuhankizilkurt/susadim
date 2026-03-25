@@ -15,6 +15,7 @@ const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "*";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const SUBS_FILE = path.join(__dirname, "subscriptions.json");
+const USERS_FILE = path.join(__dirname, "users.json");
 
 app.use(cors({ origin: FRONTEND_ORIGIN === "*" ? true : FRONTEND_ORIGIN }));
 app.use(express.json());
@@ -36,27 +37,40 @@ function readSubscriptions() {
 }
 
 function saveSubscriptions(subs) {
-  fs.writeFileSync(SUBS_FILE, JSON.stringify(subs, null, 2));
+  fs.writeFileSync(SUBS_FILE, JSON.stringify(subs, null, 2), "utf8");
 }
 
 // ---------------- USERS ----------------
 
 function readUsers() {
   try {
-    return JSON.parse(fs.readFileSync(path.join(__dirname, "users.json"), "utf8"));
+    return JSON.parse(fs.readFileSync(USERS_FILE, "utf8"));
   } catch {
     return [];
   }
 }
 
 function saveUsers(users) {
-  fs.writeFileSync(
-    path.join(__dirname, "users.json"),
-    JSON.stringify(users, null, 2)
-  );
+  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), "utf8");
 }
 
 // ---------------- API ----------------
+
+app.get("/api/health", (_, res) => {
+  res.json({ ok: true });
+});
+
+app.get("/api/vapid-public-key", (_, res) => {
+  res.json({ publicKey: process.env.VAPID_PUBLIC_KEY || "" });
+});
+
+app.get("/api/debug-subs", (_req, res) => {
+  const subs = readSubscriptions();
+  res.json({
+    count: subs.length,
+    endpoints: subs.map((s) => s.endpoint),
+  });
+});
 
 app.get("/api/send-test", async (_, res) => {
   const subscriptions = readSubscriptions();
@@ -68,93 +82,108 @@ app.get("/api/send-test", async (_, res) => {
   const payload = JSON.stringify({
     title: "Susadım",
     body: "Test bildirimi 💧",
-    url: "/"
+    url: "/",
   });
 
-  await Promise.allSettled(
+  const results = await Promise.allSettled(
     subscriptions.map((sub) => webpush.sendNotification(sub, payload))
   );
 
-  res.json({ ok: true });
-});
+  const failedEndpoints = [];
+  results.forEach((result, index) => {
+    if (result.status === "rejected") {
+      failedEndpoints.push(subscriptions[index].endpoint);
+      console.error("GET send-test push hata:", result.reason);
+    }
+  });
 
-
-app.get("/api/health", (_, res) => {
-  res.json({ ok: true });
-});
-
-  for (const user of users) {
-    if (!user.subscription) continue;
-
-    await webpush.sendNotification(
-      user.subscription,
-      JSON.stringify({
-        title: "Susadım",
-        body: "Test bildirimi 💧",
-      })
-    );
+  if (failedEndpoints.length) {
+    const filtered = subscriptions.filter((sub) => !failedEndpoints.includes(sub.endpoint));
+    saveSubscriptions(filtered);
   }
 
-  res.json({ ok: true });
+  res.json({ ok: true, sent: subscriptions.length - failedEndpoints.length });
+});
+
+app.post("/api/send-test", async (_, res) => {
+  const subscriptions = readSubscriptions();
+
+  if (!subscriptions.length) {
+    return res.status(400).json({ ok: false, message: "kayıtlı subscription yok" });
+  }
+
+  const payload = JSON.stringify({
+    title: "Susadım",
+    body: "Test bildirimi 💧",
+    url: "/",
+  });
+
+  const results = await Promise.allSettled(
+    subscriptions.map((sub) => webpush.sendNotification(sub, payload))
+  );
+
+  const failedEndpoints = [];
+  results.forEach((result, index) => {
+    if (result.status === "rejected") {
+      failedEndpoints.push(subscriptions[index].endpoint);
+      console.error("POST send-test push hata:", result.reason);
+    }
+  });
+
+  if (failedEndpoints.length) {
+    const filtered = subscriptions.filter((sub) => !failedEndpoints.includes(sub.endpoint));
+    saveSubscriptions(filtered);
+  }
+
+  res.json({ ok: true, sent: subscriptions.length - failedEndpoints.length });
 });
 
 app.post("/api/subscribe", (req, res) => {
-  const { subscription } = req.body;
+  const { subscription } = req.body || {};
+
+  if (!subscription?.endpoint) {
+    return res.status(400).json({ ok: false, message: "subscription eksik" });
+  }
+
   const subs = readSubscriptions();
 
-  if (!subs.find(s => s.endpoint === subscription.endpoint)) {
+  if (!subs.find((s) => s.endpoint === subscription.endpoint)) {
     subs.push(subscription);
     saveSubscriptions(subs);
   }
 
-  // subscription'ı user'a bağla
   const users = readUsers();
-  const user = users[0]; // şimdilik tek user
-  user.subscription = subscription;
-  saveUsers(users);
+  if (users.length > 0) {
+    users[0].subscription = subscription;
+    saveUsers(users);
+  }
 
   res.json({ ok: true });
 });
 
-// 🔥 YENİ EKLEDİĞİMİZ KISIM
 app.post("/api/drink", (req, res) => {
-  const { userId, amountMl } = req.body;
+  const { userId, amountMl } = req.body || {};
 
   const users = readUsers();
-  const user = users.find(u => u.id === userId);
+  const user = users.find((u) => u.id === userId);
 
-  if (!user) return res.status(404).json({ ok: false });
+  if (!user) {
+    return res.status(404).json({ ok: false, message: "kullanıcı bulunamadı" });
+  }
 
-  user.todayConsumedMl += amountMl;
+  user.todayConsumedMl = (user.todayConsumedMl || 0) + Number(amountMl);
   user.lastDrinkAt = new Date().toISOString();
 
   saveUsers(users);
 
-  res.json({ ok: true });
-});
-
-// test push
-app.post("/api/send-test", async (_, res) => {
-  const users = readUsers();
-
-  for (const user of users) {
-    if (!user.subscription) continue;
-
-    await webpush.sendNotification(
-      user.subscription,
-      JSON.stringify({
-        title: "Susadım",
-        body: "Test bildirimi 💧",
-      })
-    );
-  }
-
-  res.json({ ok: true });
+  res.json({ ok: true, todayConsumedMl: user.todayConsumedMl });
 });
 
 app.listen(PORT, () => {
   console.log(`Backend running on http://localhost:${PORT}`);
 });
+
+// ---------------- CRON ----------------
 
 cron.schedule("*/30 * * * *", async () => {
   console.log("⏰ kontrol çalıştı");
@@ -164,15 +193,11 @@ cron.schedule("*/30 * * * *", async () => {
   for (const user of users) {
     if (!user.notificationsEnabled) continue;
     if (!user.subscription) continue;
-
-    // hedef tamam mı?
     if (user.todayConsumedMl >= user.dailyGoalMl) continue;
 
-    // son 45 dk içinde içti mi?
     if (user.lastDrinkAt) {
       const diff = (Date.now() - new Date(user.lastDrinkAt)) / 1000 / 60;
       if (diff < 45) continue;
-    
     }
 
     const remaining = user.dailyGoalMl - user.todayConsumedMl;
@@ -184,13 +209,11 @@ cron.schedule("*/30 * * * *", async () => {
         remaining <= user.defaultCupMl
           ? "Son bardağa kaldı 🌸"
           : `Yaklaşık ${cups} bardak kaldı 💧`,
+      url: "/",
     };
 
     try {
-      await webpush.sendNotification(
-        user.subscription,
-        JSON.stringify(message)
-      );
+      await webpush.sendNotification(user.subscription, JSON.stringify(message));
       console.log("📩 bildirim gitti");
     } catch (err) {
       console.error("push hata:", err);
