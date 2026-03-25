@@ -12,18 +12,21 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "*";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
 const SUBS_FILE = path.join(__dirname, "subscriptions.json");
 const USERS_FILE = path.join(__dirname, "users.json");
 
 app.use(cors({ origin: FRONTEND_ORIGIN === "*" ? true : FRONTEND_ORIGIN }));
 app.use(express.json());
 
+/* 🔥 VAPID FIX (TRIM EKLENDİ) */
 webpush.setVapidDetails(
-  process.env.VAPID_SUBJECT,
-  process.env.VAPID_PUBLIC_KEY,
-  process.env.VAPID_PRIVATE_KEY
+  (process.env.VAPID_SUBJECT || "").trim(),
+  (process.env.VAPID_PUBLIC_KEY || "").trim(),
+  (process.env.VAPID_PRIVATE_KEY || "").trim()
 );
 
 // ---------------- SUBSCRIPTIONS ----------------
@@ -60,8 +63,10 @@ app.get("/api/health", (_, res) => {
   res.json({ ok: true });
 });
 
+/* 🔥 BURASI ÇOK KRİTİK (iPhone fix) */
 app.get("/api/vapid-public-key", (_, res) => {
-  res.json({ publicKey: process.env.VAPID_PUBLIC_KEY || "" });
+  const key = (process.env.VAPID_PUBLIC_KEY || "").trim();
+  res.json({ publicKey: key });
 });
 
 app.get("/api/debug-subs", (_req, res) => {
@@ -76,7 +81,7 @@ app.get("/api/send-test", async (_, res) => {
   const subscriptions = readSubscriptions();
 
   if (!subscriptions.length) {
-    return res.status(400).json({ ok: false, message: "kayıtlı subscription yok" });
+    return res.status(400).json({ ok: false });
   }
 
   const payload = JSON.stringify({
@@ -85,64 +90,18 @@ app.get("/api/send-test", async (_, res) => {
     url: "/",
   });
 
-  const results = await Promise.allSettled(
+  await Promise.allSettled(
     subscriptions.map((sub) => webpush.sendNotification(sub, payload))
   );
 
-  const failedEndpoints = [];
-  results.forEach((result, index) => {
-    if (result.status === "rejected") {
-      failedEndpoints.push(subscriptions[index].endpoint);
-      console.error("GET send-test push hata:", result.reason);
-    }
-  });
-
-  if (failedEndpoints.length) {
-    const filtered = subscriptions.filter((sub) => !failedEndpoints.includes(sub.endpoint));
-    saveSubscriptions(filtered);
-  }
-
-  res.json({ ok: true, sent: subscriptions.length - failedEndpoints.length });
-});
-
-app.post("/api/send-test", async (_, res) => {
-  const subscriptions = readSubscriptions();
-
-  if (!subscriptions.length) {
-    return res.status(400).json({ ok: false, message: "kayıtlı subscription yok" });
-  }
-
-  const payload = JSON.stringify({
-    title: "Susadım",
-    body: "Test bildirimi 💧",
-    url: "/",
-  });
-
-  const results = await Promise.allSettled(
-    subscriptions.map((sub) => webpush.sendNotification(sub, payload))
-  );
-
-  const failedEndpoints = [];
-  results.forEach((result, index) => {
-    if (result.status === "rejected") {
-      failedEndpoints.push(subscriptions[index].endpoint);
-      console.error("POST send-test push hata:", result.reason);
-    }
-  });
-
-  if (failedEndpoints.length) {
-    const filtered = subscriptions.filter((sub) => !failedEndpoints.includes(sub.endpoint));
-    saveSubscriptions(filtered);
-  }
-
-  res.json({ ok: true, sent: subscriptions.length - failedEndpoints.length });
+  res.json({ ok: true });
 });
 
 app.post("/api/subscribe", (req, res) => {
-  const { subscription } = req.body || {};
+  const { subscription } = req.body;
 
   if (!subscription?.endpoint) {
-    return res.status(400).json({ ok: false, message: "subscription eksik" });
+    return res.status(400).json({ ok: false });
   }
 
   const subs = readSubscriptions();
@@ -152,71 +111,11 @@ app.post("/api/subscribe", (req, res) => {
     saveSubscriptions(subs);
   }
 
-  const users = readUsers();
-  if (users.length > 0) {
-    users[0].subscription = subscription;
-    saveUsers(users);
-  }
-
   res.json({ ok: true });
 });
 
-app.post("/api/drink", (req, res) => {
-  const { userId, amountMl } = req.body || {};
-
-  const users = readUsers();
-  const user = users.find((u) => u.id === userId);
-
-  if (!user) {
-    return res.status(404).json({ ok: false, message: "kullanıcı bulunamadı" });
-  }
-
-  user.todayConsumedMl = (user.todayConsumedMl || 0) + Number(amountMl);
-  user.lastDrinkAt = new Date().toISOString();
-
-  saveUsers(users);
-
-  res.json({ ok: true, todayConsumedMl: user.todayConsumedMl });
-});
+// ---------------- START ----------------
 
 app.listen(PORT, () => {
-  console.log(`Backend running on http://localhost:${PORT}`);
-});
-
-// ---------------- CRON ----------------
-
-cron.schedule("*/30 * * * *", async () => {
-  console.log("⏰ kontrol çalıştı");
-
-  const users = readUsers();
-
-  for (const user of users) {
-    if (!user.notificationsEnabled) continue;
-    if (!user.subscription) continue;
-    if (user.todayConsumedMl >= user.dailyGoalMl) continue;
-
-    if (user.lastDrinkAt) {
-      const diff = (Date.now() - new Date(user.lastDrinkAt)) / 1000 / 60;
-      if (diff < 45) continue;
-    }
-
-    const remaining = user.dailyGoalMl - user.todayConsumedMl;
-    const cups = Math.ceil(remaining / user.defaultCupMl);
-
-    const message = {
-      title: "Susadım",
-      body:
-        remaining <= user.defaultCupMl
-          ? "Son bardağa kaldı 🌸"
-          : `Yaklaşık ${cups} bardak kaldı 💧`,
-      url: "/",
-    };
-
-    try {
-      await webpush.sendNotification(user.subscription, JSON.stringify(message));
-      console.log("📩 bildirim gitti");
-    } catch (err) {
-      console.error("push hata:", err);
-    }
-  }
+  console.log(`Backend running on ${PORT}`);
 });
