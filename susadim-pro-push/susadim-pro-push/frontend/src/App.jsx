@@ -16,8 +16,6 @@ import {
 } from "lucide-react";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
-const PUBLIC_VAPID_KEY = import.meta.env.VITE_PUBLIC_VAPID_KEY || "";
-
 const motivationalMessages = [
   "Harika, vücuduna küçük bir iyilik yaptın.",
   "Bir yudum daha, enerji biraz daha yerini bulsun.",
@@ -353,46 +351,79 @@ export default function App() {
 
   async function subscribeToPush() {
     try {
-      if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
-        setNotificationReady(false);
+      console.log("subscribe başladı");
+
+      if (!("serviceWorker" in navigator)) {
+        alert("Service Worker yok");
         return;
       }
 
-      if (!PUBLIC_VAPID_KEY) {
-        setNotificationReady(false);
+      if (!("PushManager" in window)) {
+        alert("Push desteklenmiyor");
         return;
       }
 
       const permission = await Notification.requestPermission();
+      console.log("izin:", permission);
       setPermissionState(permission);
 
       if (permission !== "granted") {
-        setNotificationReady(false);
+        alert("Bildirim izni verilmedi");
         return;
       }
 
-      const registration = await navigator.serviceWorker.ready;
+      let registration = await navigator.serviceWorker.getRegistration();
+
+      if (!registration) {
+        console.log("SW register ediliyor...");
+        registration = await navigator.serviceWorker.register("/sw.js");
+      }
+
+      await navigator.serviceWorker.ready;
+      console.log("SW hazır");
+
       let subscription = await registration.pushManager.getSubscription();
 
       if (!subscription) {
+        console.log("Yeni subscription oluşturuluyor");
+
+        const res = await fetch(`${API_BASE}/api/vapid-public-key`);
+        const data = await res.json();
+
+        if (!data.publicKey) {
+          alert("Public key alınamadı");
+          return;
+        }
+
         subscription = await registration.pushManager.subscribe({
           userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(PUBLIC_VAPID_KEY),
+          applicationServerKey: urlBase64ToUint8Array(data.publicKey),
         });
+
+        console.log("Subscription oluşturuldu");
+      } else {
+        console.log("Mevcut subscription bulundu");
       }
 
-      await fetch(`${API_BASE}/api/subscribe`, {
+      const saveRes = await fetch(`${API_BASE}/api/subscribe`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({ subscription }),
       });
 
+      const result = await saveRes.json();
+      console.log("backend kayıt:", result);
+
       setNotificationsEnabled(true);
       setNotificationReady(true);
-      setMessage("Bildirimler açıldı. Gün içinde sana hatırlatma yapacağım 💧");
-    } catch (error) {
-      console.error(error);
-      setNotificationReady(false);
+      setMessage("Bildirimler aktif 💧");
+
+      alert("Bildirimler başarıyla açıldı 🎉");
+    } catch (err) {
+      console.error(err);
+      alert("HATA: " + err.message);
     }
   }
 
