@@ -61,6 +61,23 @@ function saveUsers(users) {
 app.get("/api/health", (_, res) => {
   res.json({ ok: true });
 });
+app.get("/api/send-test", async (_, res) => {
+  const users = readUsers();
+
+  for (const user of users) {
+    if (!user.subscription) continue;
+
+    await webpush.sendNotification(
+      user.subscription,
+      JSON.stringify({
+        title: "Susadım",
+        body: "Test bildirimi 💧",
+      })
+    );
+  }
+
+  res.json({ ok: true });
+});
 
 app.post("/api/subscribe", (req, res) => {
   const { subscription } = req.body;
