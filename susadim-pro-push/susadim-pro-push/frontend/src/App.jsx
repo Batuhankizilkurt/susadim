@@ -1,222 +1,83 @@
-import cron from "node-cron";
-import express from "express";
-import cors from "cors";
-import dotenv from "dotenv";
-import fs from "fs";
-import path from "path";
-import webpush from "web-push";
-import { fileURLToPath } from "url";
+import React, { useState } from "react";
 
-dotenv.config();
+const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
-const app = express();
-const PORT = process.env.PORT || 3001;
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "*";
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const SUBS_FILE = path.join(__dirname, "subscriptions.json");
-const USERS_FILE = path.join(__dirname, "users.json");
-
-app.use(cors({ origin: FRONTEND_ORIGIN === "*" ? true : FRONTEND_ORIGIN }));
-app.use(express.json());
-
-webpush.setVapidDetails(
-  process.env.VAPID_SUBJECT,
-  process.env.VAPID_PUBLIC_KEY,
-  process.env.VAPID_PRIVATE_KEY
-);
-
-// ---------------- SUBSCRIPTIONS ----------------
-
-function readSubscriptions() {
-  try {
-    return JSON.parse(fs.readFileSync(SUBS_FILE, "utf8"));
-  } catch {
-    return [];
-  }
+function urlBase64ToUint8Array(base64String) {
+  const cleaned = (base64String || "").trim();
+  const padding = "=".repeat((4 - (cleaned.length % 4)) % 4);
+  const base64 = (cleaned + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  return Uint8Array.from([...rawData].map((char) => char.charCodeAt(0)));
 }
 
-function saveSubscriptions(subs) {
-  fs.writeFileSync(SUBS_FILE, JSON.stringify(subs, null, 2), "utf8");
-}
+export default function App() {
+  const [permissionState, setPermissionState] = useState(Notification.permission);
 
-// ---------------- USERS ----------------
-
-function readUsers() {
-  try {
-    return JSON.parse(fs.readFileSync(USERS_FILE, "utf8"));
-  } catch {
-    return [];
-  }
-}
-
-function saveUsers(users) {
-  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), "utf8");
-}
-
-// ---------------- API ----------------
-
-app.get("/api/health", (_, res) => {
-  res.json({ ok: true });
-});
-
-app.get("/api/vapid-public-key", (_, res) => {
-  res.json({ publicKey: process.env.VAPID_PUBLIC_KEY || "" });
-});
-
-app.get("/api/debug-subs", (_req, res) => {
-  const subs = readSubscriptions();
-  res.json({
-    count: subs.length,
-    endpoints: subs.map((s) => s.endpoint),
-  });
-});
-
-app.get("/api/send-test", async (_, res) => {
-  const subscriptions = readSubscriptions();
-
-  if (!subscriptions.length) {
-    return res.status(400).json({ ok: false, message: "kayıtlı subscription yok" });
-  }
-
-  const payload = JSON.stringify({
-    title: "Susadım",
-    body: "Test bildirimi 💧",
-    url: "/",
-  });
-
-  const results = await Promise.allSettled(
-    subscriptions.map((sub) => webpush.sendNotification(sub, payload))
-  );
-
-  const failedEndpoints = [];
-  results.forEach((result, index) => {
-    if (result.status === "rejected") {
-      failedEndpoints.push(subscriptions[index].endpoint);
-      console.error("GET send-test push hata:", result.reason);
-    }
-  });
-
-  if (failedEndpoints.length) {
-    const filtered = subscriptions.filter((sub) => !failedEndpoints.includes(sub.endpoint));
-    saveSubscriptions(filtered);
-  }
-
-  res.json({ ok: true, sent: subscriptions.length - failedEndpoints.length });
-});
-
-app.post("/api/send-test", async (_, res) => {
-  const subscriptions = readSubscriptions();
-
-  if (!subscriptions.length) {
-    return res.status(400).json({ ok: false, message: "kayıtlı subscription yok" });
-  }
-
-  const payload = JSON.stringify({
-    title: "Susadım",
-    body: "Test bildirimi 💧",
-    url: "/",
-  });
-
-  const results = await Promise.allSettled(
-    subscriptions.map((sub) => webpush.sendNotification(sub, payload))
-  );
-
-  const failedEndpoints = [];
-  results.forEach((result, index) => {
-    if (result.status === "rejected") {
-      failedEndpoints.push(subscriptions[index].endpoint);
-      console.error("POST send-test push hata:", result.reason);
-    }
-  });
-
-  if (failedEndpoints.length) {
-    const filtered = subscriptions.filter((sub) => !failedEndpoints.includes(sub.endpoint));
-    saveSubscriptions(filtered);
-  }
-
-  res.json({ ok: true, sent: subscriptions.length - failedEndpoints.length });
-});
-
-app.post("/api/subscribe", (req, res) => {
-  const { subscription } = req.body || {};
-
-  if (!subscription?.endpoint) {
-    return res.status(400).json({ ok: false, message: "subscription eksik" });
-  }
-
-  const subs = readSubscriptions();
-
-  if (!subs.find((s) => s.endpoint === subscription.endpoint)) {
-    subs.push(subscription);
-    saveSubscriptions(subs);
-  }
-
-  const users = readUsers();
-  if (users.length > 0) {
-    users[0].subscription = subscription;
-    saveUsers(users);
-  }
-
-  res.json({ ok: true });
-});
-
-app.post("/api/drink", (req, res) => {
-  const { userId, amountMl } = req.body || {};
-
-  const users = readUsers();
-  const user = users.find((u) => u.id === userId);
-
-  if (!user) {
-    return res.status(404).json({ ok: false, message: "kullanıcı bulunamadı" });
-  }
-
-  user.todayConsumedMl = (user.todayConsumedMl || 0) + Number(amountMl);
-  user.lastDrinkAt = new Date().toISOString();
-
-  saveUsers(users);
-
-  res.json({ ok: true, todayConsumedMl: user.todayConsumedMl });
-});
-
-app.listen(PORT, () => {
-  console.log(`Backend running on http://localhost:${PORT}`);
-});
-
-// ---------------- CRON ----------------
-
-cron.schedule("*/30 * * * *", async () => {
-  console.log("⏰ kontrol çalıştı");
-
-  const users = readUsers();
-
-  for (const user of users) {
-    if (!user.notificationsEnabled) continue;
-    if (!user.subscription) continue;
-    if (user.todayConsumedMl >= user.dailyGoalMl) continue;
-
-    if (user.lastDrinkAt) {
-      const diff = (Date.now() - new Date(user.lastDrinkAt)) / 1000 / 60;
-      if (diff < 45) continue;
-    }
-
-    const remaining = user.dailyGoalMl - user.todayConsumedMl;
-    const cups = Math.ceil(remaining / user.defaultCupMl);
-
-    const message = {
-      title: "Susadım",
-      body:
-        remaining <= user.defaultCupMl
-          ? "Son bardağa kaldı 🌸"
-          : `Yaklaşık ${cups} bardak kaldı 💧`,
-      url: "/",
-    };
-
+  const subscribeToPush = async () => {
     try {
-      await webpush.sendNotification(user.subscription, JSON.stringify(message));
-      console.log("📩 bildirim gitti");
+      if (!("serviceWorker" in navigator)) {
+        alert("Service Worker yok");
+        return;
+      }
+
+      if (!("PushManager" in window)) {
+        alert("Push desteklenmiyor");
+        return;
+      }
+
+      const permission = await Notification.requestPermission();
+      setPermissionState(permission);
+
+      if (permission !== "granted") {
+        alert("İzin verilmedi");
+        return;
+      }
+
+      let registration = await navigator.serviceWorker.getRegistration();
+
+      if (!registration) {
+        registration = await navigator.serviceWorker.register("/sw.js");
+      }
+
+      await navigator.serviceWorker.ready;
+
+      let subscription = await registration.pushManager.getSubscription();
+
+      if (!subscription) {
+        const res = await fetch(`${API_BASE}/api/vapid-public-key`);
+        const data = await res.json();
+
+        const cleanKey = (data.publicKey || "").trim();
+
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(cleanKey),
+        });
+      }
+
+      await fetch(`${API_BASE}/api/subscribe`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ subscription }),
+      });
+
+      alert("Bildirimler aktif 💧");
     } catch (err) {
-      console.error("push hata:", err);
+      console.error(err);
+      alert("HATA: " + err.message);
     }
-  }
-});
+  };
+
+  return (
+    <div style={{ padding: 40 }}>
+      <h1>Susadım 💧</h1>
+      <p>Durum: {permissionState}</p>
+
+      <button onClick={subscribeToPush}>
+        Bildirimleri aç
+      </button>
+    </div>
+  );
+}
