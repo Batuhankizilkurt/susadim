@@ -1,0 +1,13 @@
+[
+  {
+    "id": "batuhan",
+    "notificationsEnabled": true,
+    "dailyGoalMl": 2000,
+    "defaultCupMl": 500,
+    "startHour": 9,
+    "endHour": 21,
+    "todayConsumedMl": 500,
+    "lastDrinkAt": "2026-03-24T08:00:00.000Z",
+    "subscription": null
+  }
+]
