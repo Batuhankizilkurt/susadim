@@ -14,18 +14,20 @@ const PORT = process.env.PORT || 3001;
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "*";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
 const SUBS_FILE = path.join(__dirname, "subscriptions.json");
+const USERS_FILE = path.join(__dirname, "users.json");
 
 app.use(cors({ origin: FRONTEND_ORIGIN === "*" ? true : FRONTEND_ORIGIN }));
 app.use(express.json());
 
 webpush.setVapidDetails(
-  process.env.VAPID_SUBJECT,
-  process.env.VAPID_PUBLIC_KEY,
-  process.env.VAPID_PRIVATE_KEY
+  (process.env.VAPID_SUBJECT || "").trim(),
+  (process.env.VAPID_PUBLIC_KEY || "").trim(),
+  (process.env.VAPID_PRIVATE_KEY || "").trim()
 );
 
-// ---------------- SUBSCRIPTIONS ----------------
+// ---------------- SUBS ----------------
 
 function readSubscriptions() {
   try {
@@ -36,24 +38,21 @@ function readSubscriptions() {
 }
 
 function saveSubscriptions(subs) {
-  fs.writeFileSync(SUBS_FILE, JSON.stringify(subs, null, 2));
+  fs.writeFileSync(SUBS_FILE, JSON.stringify(subs, null, 2), "utf8");
 }
 
 // ---------------- USERS ----------------
 
 function readUsers() {
   try {
-    return JSON.parse(fs.readFileSync(path.join(__dirname, "users.json"), "utf8"));
+    return JSON.parse(fs.readFileSync(USERS_FILE, "utf8"));
   } catch {
     return [];
   }
 }
 
 function saveUsers(users) {
-  fs.writeFileSync(
-    path.join(__dirname, "users.json"),
-    JSON.stringify(users, null, 2)
-  );
+  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), "utf8");
 }
 
 // ---------------- API ----------------
@@ -62,34 +61,54 @@ app.get("/api/health", (_, res) => {
   res.json({ ok: true });
 });
 
+app.get("/api/vapid-public-key", (_, res) => {
+  res.json({ publicKey: (process.env.VAPID_PUBLIC_KEY || "").trim() });
+});
+
+app.get("/api/debug-subs", (_, res) => {
+  const subs = readSubscriptions();
+  res.json({
+    count: subs.length,
+    endpoints: subs.map((s) => s.endpoint),
+  });
+});
+
+// 🔥 SUBSCRIBE
 app.post("/api/subscribe", (req, res) => {
-  const { subscription } = req.body;
+  const { subscription } = req.body || {};
+
+  if (!subscription?.endpoint) {
+    return res.status(400).json({ ok: false });
+  }
+
   const subs = readSubscriptions();
 
-  if (!subs.find(s => s.endpoint === subscription.endpoint)) {
+  if (!subs.find((s) => s.endpoint === subscription.endpoint)) {
     subs.push(subscription);
     saveSubscriptions(subs);
   }
 
-  // subscription'ı user'a bağla
   const users = readUsers();
-  const user = users[0]; // şimdilik tek user
-  user.subscription = subscription;
-  saveUsers(users);
+  if (users.length > 0) {
+    users[0].subscription = subscription;
+    saveUsers(users);
+  }
 
   res.json({ ok: true });
 });
 
-// 🔥 YENİ EKLEDİĞİMİZ KISIM
+// 🔥 DRINK
 app.post("/api/drink", (req, res) => {
-  const { userId, amountMl } = req.body;
+  const { userId, amountMl } = req.body || {};
 
   const users = readUsers();
-  const user = users.find(u => u.id === userId);
+  const user = users.find((u) => u.id === userId);
 
   if (!user) return res.status(404).json({ ok: false });
 
-  user.todayConsumedMl += amountMl;
+  user.todayConsumedMl =
+    (user.todayConsumedMl || 0) + Number(amountMl || 0);
+
   user.lastDrinkAt = new Date().toISOString();
 
   saveUsers(users);
@@ -97,67 +116,80 @@ app.post("/api/drink", (req, res) => {
   res.json({ ok: true });
 });
 
-// test push
-app.post("/api/send-test", async (_, res) => {
-  const users = readUsers();
+// 🔥 TEST PUSH (GET + POST)
+app.get("/api/send-test", async (_, res) => {
+  const subs = readSubscriptions();
 
-  for (const user of users) {
-    if (!user.subscription) continue;
-
-    await webpush.sendNotification(
-      user.subscription,
-      JSON.stringify({
-        title: "Susadım",
-        body: "Test bildirimi 💧",
-      })
-    );
+  if (!subs.length) {
+    return res.status(400).json({ ok: false });
   }
+
+  const payload = JSON.stringify({
+    title: "Susadım",
+    body: "Test bildirimi 💧",
+    url: "/",
+  });
+
+  await Promise.allSettled(
+    subs.map((s) => webpush.sendNotification(s, payload))
+  );
 
   res.json({ ok: true });
 });
 
-app.listen(PORT, () => {
-  console.log(`Backend running on http://localhost:${PORT}`);
+app.post("/api/send-test", async (_, res) => {
+  const subs = readSubscriptions();
+
+  if (!subs.length) {
+    return res.status(400).json({ ok: false });
+  }
+
+  const payload = JSON.stringify({
+    title: "Susadım",
+    body: "Test bildirimi 💧",
+    url: "/",
+  });
+
+  await Promise.allSettled(
+    subs.map((s) => webpush.sendNotification(s, payload))
+  );
+
+  res.json({ ok: true });
 });
 
-cron.schedule("*/30 * * * *", async () => {
-  console.log("⏰ kontrol çalıştı");
+// ---------------- START ----------------
+
+app.listen(PORT, () => {
+  console.log(`Server running ${PORT}`);
+});
+
+// ---------------- CRON ----------------
+
+// 🔥 HER DAKİKA ÇALIŞIR
+cron.schedule("* * * * *", async () => {
+  console.log("⏰ CRON ÇALIŞTI");
 
   const users = readUsers();
+  const subs = readSubscriptions();
 
-  for (const user of users) {
-    if (!user.notificationsEnabled) continue;
-    if (!user.subscription) continue;
+  if (!users.length || !subs.length) return;
 
-    // hedef tamam mı?
-    if (user.todayConsumedMl >= user.dailyGoalMl) continue;
+  const user = users[0];
 
-    // son 45 dk içinde içti mi?
-    if (user.lastDrinkAt) {
-      const diff = (Date.now() - new Date(user.lastDrinkAt)) / 1000 / 60;
-      if (diff < 45) continue;
-    
-    }
+  if (!user.notificationsEnabled) return;
+  if (user.todayConsumedMl >= user.dailyGoalMl) return;
 
-    const remaining = user.dailyGoalMl - user.todayConsumedMl;
-    const cups = Math.ceil(remaining / user.defaultCupMl);
+  const remaining = user.dailyGoalMl - user.todayConsumedMl;
 
-    const message = {
-      title: "Susadım",
-      body:
-        remaining <= user.defaultCupMl
-          ? "Son bardağa kaldı 🌸"
-          : `Yaklaşık ${cups} bardak kaldı 💧`,
-    };
+  const payload = JSON.stringify({
+    title: "Susadım",
+    body: `Kalan ${remaining} ml 💧`,
+    url: "/",
+  });
 
-    try {
-      await webpush.sendNotification(
-        user.subscription,
-        JSON.stringify(message)
-      );
-      console.log("📩 bildirim gitti");
-    } catch (err) {
-      console.error("push hata:", err);
-    }
-  }
+  await Promise.allSettled(
+    subs.map((s) => webpush.sendNotification(s, payload))
+  );
+
+  console.log("📩 CRON GÖNDERDİ");
 });
