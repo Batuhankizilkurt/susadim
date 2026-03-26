@@ -158,7 +158,42 @@ app.post("/api/send-test", async (_, res) => {
 });
 
 // ---------------- START ----------------
+app.get("/api/cron-check", async (_, res) => {
+  console.log("🔥 CRON API TETİKLENDİ");
 
+  const users = readUsers();
+  const subs = readSubscriptions();
+
+  if (!users.length || !subs.length) {
+    return res.json({ ok: false });
+  }
+
+  const user = users[0];
+
+  if (!user.notificationsEnabled) {
+    return res.json({ ok: false });
+  }
+
+  if (user.todayConsumedMl >= user.dailyGoalMl) {
+    return res.json({ ok: false });
+  }
+
+  const remaining = user.dailyGoalMl - user.todayConsumedMl;
+
+  const payload = JSON.stringify({
+    title: "Susadım",
+    body: `Kalan ${remaining} ml 💧`,
+    url: "/",
+  });
+
+  await Promise.allSettled(
+    subs.map((s) => webpush.sendNotification(s, payload))
+  );
+
+  console.log("📩 API bildirim gönderdi");
+
+  res.json({ ok: true });
+});
 app.listen(PORT, () => {
   console.log(`Server running ${PORT}`);
 });
