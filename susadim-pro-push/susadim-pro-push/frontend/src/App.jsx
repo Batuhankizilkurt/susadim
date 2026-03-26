@@ -349,6 +349,7 @@ export default function App() {
     setStreak(calculateStreak(nextHistory, 0));
   }
 
+
   async function subscribeToPush() {
     try {
       if (!("serviceWorker" in navigator)) {
