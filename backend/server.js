@@ -10,6 +10,7 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "*";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,121 +18,242 @@ const __dirname = path.dirname(__filename);
 const SUBS_FILE = path.join(__dirname, "subscriptions.json");
 const USERS_FILE = path.join(__dirname, "users.json");
 
-app.use(cors());
+app.use(cors({ origin: FRONTEND_ORIGIN === "*" ? true : FRONTEND_ORIGIN }));
 app.use(express.json());
 
-// 🔐 VAPID
 webpush.setVapidDetails(
-  process.env.VAPID_SUBJECT,
-  process.env.VAPID_PUBLIC_KEY,
-  process.env.VAPID_PRIVATE_KEY
+  (process.env.VAPID_SUBJECT || "").trim(),
+  (process.env.VAPID_PUBLIC_KEY || "").trim(),
+  (process.env.VAPID_PRIVATE_KEY || "").trim()
 );
 
-// ---------------- FILE HELPERS ----------------
+const reminderMessages = [
+  "Bir bardak su iyi gider 💧",
+  "Hedefin seni bekliyor, küçük bir yudum yeter.",
+  "Telefonu açtıysan suyu da hatırla 💙",
+  "Susadım diyor olabilirsin, su molası zamanı.",
+  "Biraz su iç, iyi gelecek 🌸",
+];
 
-function readJSON(file) {
+function randomItem(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function readJSON(file, fallback = []) {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
   } catch {
-    return [];
+    return fallback;
   }
 }
 
 function writeJSON(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
+  fs.writeFileSync(file, JSON.stringify(data, null, 2), "utf8");
 }
 
-// ---------------- HEALTH ----------------
+function readSubscriptions() {
+  return readJSON(SUBS_FILE, []);
+}
 
-app.get("/api/health", (_, res) => {
+function saveSubscriptions(subs) {
+  writeJSON(SUBS_FILE, subs);
+}
+
+function readUsers() {
+  return readJSON(USERS_FILE, []);
+}
+
+function saveUsers(users) {
+  writeJSON(USERS_FILE, users);
+}
+
+function minutesSince(dateString) {
+  if (!dateString) return Number.POSITIVE_INFINITY;
+  const diffMs = Date.now() - new Date(dateString).getTime();
+  return diffMs / 1000 / 60;
+}
+
+async function sendPushToAll(payloadObj) {
+  const subs = readSubscriptions();
+
+  if (!subs.length) {
+    return { ok: false, sent: 0, removed: 0 };
+  }
+
+  const payload = JSON.stringify(payloadObj);
+
+  const results = await Promise.allSettled(
+    subs.map((sub) => webpush.sendNotification(sub, payload))
+  );
+
+  const failedEndpoints = [];
+  results.forEach((result, index) => {
+    if (result.status === "rejected") {
+      failedEndpoints.push(subs[index].endpoint);
+      console.error("push hata:", result.reason);
+    }
+  });
+
+  if (failedEndpoints.length) {
+    const filtered = subs.filter((sub) => !failedEndpoints.includes(sub.endpoint));
+    saveSubscriptions(filtered);
+  }
+
+  return {
+    ok: true,
+    sent: subs.length - failedEndpoints.length,
+    removed: failedEndpoints.length,
+  };
+}
+
+app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-// ---------------- SUBSCRIBE ----------------
+app.get("/api/vapid-public-key", (_req, res) => {
+  res.json({ publicKey: (process.env.VAPID_PUBLIC_KEY || "").trim() });
+});
+
+app.get("/api/debug-subs", (_req, res) => {
+  const subs = readSubscriptions();
+  res.json({
+    count: subs.length,
+    endpoints: subs.map((s) => s.endpoint),
+  });
+});
 
 app.post("/api/subscribe", (req, res) => {
-  const { subscription } = req.body;
+  const { subscription } = req.body || {};
 
-  const subs = readJSON(SUBS_FILE);
+  if (!subscription?.endpoint) {
+    return res.status(400).json({ ok: false, message: "subscription eksik" });
+  }
+
+  const subs = readSubscriptions();
 
   if (!subs.find((s) => s.endpoint === subscription.endpoint)) {
     subs.push(subscription);
-    writeJSON(SUBS_FILE, subs);
+    saveSubscriptions(subs);
   }
 
-  const users = readJSON(USERS_FILE);
-  const user = users[0];
-
-  if (user) {
-    user.subscription = subscription;
-    writeJSON(USERS_FILE, users);
+  const users = readUsers();
+  if (users.length > 0) {
+    users[0].subscription = subscription;
+    saveUsers(users);
   }
 
   res.json({ ok: true });
 });
 
-// ---------------- TEST ----------------
+app.post("/api/drink", (req, res) => {
+  const { userId, amountMl } = req.body || {};
 
-app.get("/api/test", async (_, res) => {
-  const subs = readJSON(SUBS_FILE);
+  const users = readUsers();
+  const user = users.find((u) => u.id === userId);
 
-  await Promise.allSettled(
-    subs.map((sub) =>
-      webpush.sendNotification(
-        sub,
-        JSON.stringify({
-          title: "Susadım 💧",
-          body: "Test bildirimi geldi!",
-        })
-      )
-    )
-  );
+  if (!user) {
+    return res.status(404).json({ ok: false, message: "kullanıcı bulunamadı" });
+  }
 
-  console.log("📩 TEST gönderildi");
+  user.todayConsumedMl = (user.todayConsumedMl || 0) + Number(amountMl || 0);
+  user.lastDrinkAt = new Date().toISOString();
 
-  res.json({ ok: true });
+  saveUsers(users);
+
+  res.json({
+    ok: true,
+    todayConsumedMl: user.todayConsumedMl,
+  });
 });
 
-// ---------------- CRON API (UPTIMEROBOT) ----------------
+app.post("/api/reset-day", (req, res) => {
+  const { userId, dailyGoalMl } = req.body || {};
 
-app.get("/api/cron-check", async (_, res) => {
-  console.log("🔥 CRON API TETİKLENDİ");
+  const users = readUsers();
+  const user = users.find((u) => u.id === userId);
 
-  const users = readJSON(USERS_FILE);
-  const subs = readJSON(SUBS_FILE);
+  if (!user) {
+    return res.status(404).json({ ok: false, message: "kullanıcı bulunamadı" });
+  }
 
-  if (!users.length || !subs.length) {
-    return res.json({ ok: false });
+  user.todayConsumedMl = 0;
+  user.lastDrinkAt = null;
+
+  if (dailyGoalMl != null) {
+    user.dailyGoalMl = Number(dailyGoalMl);
+  }
+
+  saveUsers(users);
+
+  res.json({ ok: true, user });
+});
+
+app.get("/api/send-test", async (_req, res) => {
+  const result = await sendPushToAll({
+    title: "Susadım 💧",
+    body: "Test bildirimi geldi!",
+    url: "/",
+  });
+
+  if (!result.ok) {
+    return res.status(400).json({ ok: false, message: "kayıtlı subscription yok" });
+  }
+
+  res.json(result);
+});
+
+app.get("/api/cron-check", async (_req, res) => {
+  console.log("🔥 cron-check tetiklendi");
+
+  const users = readUsers();
+  if (!users.length) {
+    return res.json({ ok: false, reason: "user yok" });
   }
 
   const user = users[0];
 
   if (!user.notificationsEnabled) {
-    return res.json({ ok: false });
+    return res.json({ ok: false, reason: "notifications kapalı" });
   }
 
-  if (user.todayConsumedMl >= user.dailyGoalMl) {
-    return res.json({ ok: false });
+  if ((user.todayConsumedMl || 0) >= (user.dailyGoalMl || 0)) {
+    return res.json({ ok: false, reason: "hedef tamam" });
   }
 
-  const remaining = user.dailyGoalMl - user.todayConsumedMl;
+  const mins = minutesSince(user.lastDrinkAt);
 
-  const payload = JSON.stringify({
+  if (mins < 45) {
+    return res.json({
+      ok: false,
+      reason: "45 dk dolmadı",
+      minutesSinceLastDrink: mins,
+    });
+  }
+
+  const remaining = (user.dailyGoalMl || 0) - (user.todayConsumedMl || 0);
+
+  const body =
+    remaining <= (user.defaultCupMl || 250)
+      ? "Son bardağa kaldı 🌸"
+      : `${randomItem(reminderMessages)} Kalan ${remaining} ml.`;
+
+  const result = await sendPushToAll({
     title: "Susadım 💧",
-    body: `Kalan ${remaining} ml`,
+    body,
+    url: "/",
   });
 
-  await Promise.allSettled(
-    subs.map((s) => webpush.sendNotification(s, payload))
-  );
+  console.log("📩 otomatik bildirim sonucu:", result);
 
-  console.log("📩 OTOMATİK gönderildi");
-
-  res.json({ ok: true });
+  res.json({
+    ok: true,
+    sent: result.sent,
+    removed: result.removed,
+    remaining,
+    minutesSinceLastDrink: mins,
+  });
 });
 
-// ---------------- START ----------------
-
 app.listen(PORT, () => {
-  console.log(`🚀 Backend running on ${PORT}`);
+  console.log(`Backend running on http://localhost:${PORT}`);
 });
