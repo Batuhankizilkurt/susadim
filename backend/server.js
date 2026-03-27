@@ -106,8 +106,8 @@ async function sendPushToAll(payloadObj) {
   };
 }
 
-app.get("/api/health", (_req, res) => {
-  res.json({ ok: true });
+app.get("/api/version", (_req, res) => {
+  res.json({ version: "batuhan-cron-v1" });
 });
 
 app.get("/api/vapid-public-key", (_req, res) => {
