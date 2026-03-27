@@ -222,7 +222,7 @@ app.get("/api/cron-check", async (_req, res) => {
 
   const mins = minutesSince(user.lastDrinkAt);
 
-  if (mins < 45) {
+  if (mins < 1) {
     return res.json({
       ok: false,
       reason: "45 dk dolmadı",
