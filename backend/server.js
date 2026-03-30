@@ -237,7 +237,7 @@ if (user.lastResetDate !== today) {
 
   const mins = minutesSince(user.lastDrinkAt);
 
-  if (mins < 1) {
+  if (mins < 45) {
     return res.json({
       ok: false,
       reason: "45 dk dolmadı",
