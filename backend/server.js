@@ -165,7 +165,28 @@ app.post("/api/drink", (req, res) => {
     todayConsumedMl: user.todayConsumedMl,
   });
 });
+app.post("/api/update-settings", (req, res) => {
+  const { userId, dailyGoalMl, reminderMinutes } = req.body;
 
+  const users = readUsers();
+  const user = users.find(u => u.id === userId);
+
+  if (!user) {
+    return res.status(404).json({ ok: false });
+  }
+
+  if (dailyGoalMl !== undefined) {
+    user.dailyGoalMl = Number(dailyGoalMl);
+  }
+
+  if (reminderMinutes !== undefined) {
+    user.reminderMinutes = Number(reminderMinutes);
+  }
+
+  saveUsers(users);
+
+  res.json({ ok: true, user });
+});
 app.post("/api/reset-day", (req, res) => {
   const { userId, dailyGoalMl } = req.body || {};
 
@@ -207,7 +228,7 @@ app.get("/api/cron-check", async (_req, res) => {
 
   const users = readUsers();
   if (!users.length) {
-    return res.json({ ok: false, reason: "user yok" });
+    return res.json({ ok: false, reason: "user yok" });çş.
   }
 
   const user = users[0];
@@ -237,7 +258,7 @@ if (user.lastResetDate !== today) {
 
   const mins = minutesSince(user.lastDrinkAt);
 
-  if (mins < 45) {
+  if (mins < (user.reminderMinutes || 45)) {
     return res.json({
       ok: false,
       reason: "45 dk dolmadı",
