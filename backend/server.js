@@ -165,14 +165,15 @@ app.post("/api/drink", (req, res) => {
     todayConsumedMl: user.todayConsumedMl,
   });
 });
+
 app.post("/api/update-settings", (req, res) => {
-  const { userId, dailyGoalMl, reminderMinutes, notificationsEnabled } = req.body;
+  const { userId, dailyGoalMl, reminderMinutes, notificationsEnabled } = req.body || {};
 
   const users = readUsers();
-  const user = users.find(u => u.id === userId);
+  const user = users.find((u) => u.id === userId);
 
   if (!user) {
-    return res.status(404).json({ ok: false });
+    return res.status(404).json({ ok: false, message: "kullanıcı bulunamadı" });
   }
 
   if (dailyGoalMl !== undefined) {
@@ -191,6 +192,7 @@ app.post("/api/update-settings", (req, res) => {
 
   res.json({ ok: true, user });
 });
+
 app.post("/api/reset-day", (req, res) => {
   const { userId, dailyGoalMl } = req.body || {};
 
@@ -212,7 +214,6 @@ app.post("/api/reset-day", (req, res) => {
 
   res.json({ ok: true, user });
 });
-
 app.get("/api/send-test", async (_req, res) => {
   const result = await sendPushToAll({
     title: "Susadım 💧",
