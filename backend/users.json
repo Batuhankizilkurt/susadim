@@ -8,6 +8,8 @@
     "endHour": 21,
     "todayConsumedMl": 0,
     "lastDrinkAt": null,
+    "reminderMinutes": 1,
+    "lastResetDate": "2026-03-30",
     "subscription": null
   }
 ]
