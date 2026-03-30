@@ -39,6 +39,10 @@ function randomItem(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
+function todayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function readJSON(file, fallback = []) {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -95,7 +99,9 @@ async function sendPushToAll(payloadObj) {
   });
 
   if (failedEndpoints.length) {
-    const filtered = subs.filter((sub) => !failedEndpoints.includes(sub.endpoint));
+    const filtered = subs.filter(
+      (sub) => !failedEndpoints.includes(sub.endpoint)
+    );
     saveSubscriptions(filtered);
   }
 
@@ -105,6 +111,10 @@ async function sendPushToAll(payloadObj) {
     removed: failedEndpoints.length,
   };
 }
+
+app.get("/api/health", (_req, res) => {
+  res.json({ ok: true });
+});
 
 app.get("/api/version", (_req, res) => {
   res.json({ version: "batuhan-cron-v1" });
@@ -167,7 +177,8 @@ app.post("/api/drink", (req, res) => {
 });
 
 app.post("/api/update-settings", (req, res) => {
-  const { userId, dailyGoalMl, reminderMinutes, notificationsEnabled } = req.body || {};
+  const { userId, dailyGoalMl, reminderMinutes, notificationsEnabled } =
+    req.body || {};
 
   const users = readUsers();
   const user = users.find((u) => u.id === userId);
@@ -205,6 +216,7 @@ app.post("/api/reset-day", (req, res) => {
 
   user.todayConsumedMl = 0;
   user.lastDrinkAt = null;
+  user.lastResetDate = todayKey();
 
   if (dailyGoalMl != null) {
     user.dailyGoalMl = Number(dailyGoalMl);
@@ -214,6 +226,7 @@ app.post("/api/reset-day", (req, res) => {
 
   res.json({ ok: true, user });
 });
+
 app.get("/api/send-test", async (_req, res) => {
   const result = await sendPushToAll({
     title: "Susadım 💧",
@@ -222,7 +235,9 @@ app.get("/api/send-test", async (_req, res) => {
   });
 
   if (!result.ok) {
-    return res.status(400).json({ ok: false, message: "kayıtlı subscription yok" });
+    return res
+      .status(400)
+      .json({ ok: false, message: "kayıtlı subscription yok" });
   }
 
   res.json(result);
@@ -233,25 +248,19 @@ app.get("/api/cron-check", async (_req, res) => {
 
   const users = readUsers();
   if (!users.length) {
-    return res.json({ ok: false, reason: "user yok" });çş.
+    return res.json({ ok: false, reason: "user yok" });
   }
 
   const user = users[0];
-  function todayKey() {
-  return new Date().toISOString().slice(0, 10);
-}
+  const today = todayKey();
 
-const today = todayKey();
-
-if (user.lastResetDate !== today) {
-  console.log("🆕 yeni gün, reset atıldı");
-
-  user.todayConsumedMl = 0;
-  user.lastDrinkAt = null;
-  user.lastResetDate = today;
-
-  saveUsers(users);
-}
+  if (user.lastResetDate !== today) {
+    console.log("🆕 yeni gün, reset atıldı");
+    user.todayConsumedMl = 0;
+    user.lastDrinkAt = null;
+    user.lastResetDate = today;
+    saveUsers(users);
+  }
 
   if (!user.notificationsEnabled) {
     return res.json({ ok: false, reason: "notifications kapalı" });
@@ -266,7 +275,7 @@ if (user.lastResetDate !== today) {
   if (mins < (user.reminderMinutes || 45)) {
     return res.json({
       ok: false,
-      reason: "45 dk dolmadı",
+      reason: `${user.reminderMinutes || 45} dk dolmadı`,
       minutesSinceLastDrink: mins,
     });
   }
