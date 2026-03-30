@@ -275,7 +275,7 @@ app.get("/api/cron-check", async (_req, res) => {
   if (mins < (user.reminderMinutes || 1)) {
     return res.json({
       ok: false,
-      reason: `${user.reminderMinutes || 45} dk dolmadı`,
+      reason: `${user.reminderMinutes || 1} dk dolmadı`,
       minutesSinceLastDrink: mins,
     });
   }
