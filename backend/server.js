@@ -211,6 +211,21 @@ app.get("/api/cron-check", async (_req, res) => {
   }
 
   const user = users[0];
+  function todayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+const today = todayKey();
+
+if (user.lastResetDate !== today) {
+  console.log("🆕 yeni gün, reset atıldı");
+
+  user.todayConsumedMl = 0;
+  user.lastDrinkAt = null;
+  user.lastResetDate = today;
+
+  saveUsers(users);
+}
 
   if (!user.notificationsEnabled) {
     return res.json({ ok: false, reason: "notifications kapalı" });
