@@ -166,7 +166,7 @@ app.post("/api/drink", (req, res) => {
   });
 });
 app.post("/api/update-settings", (req, res) => {
-  const { userId, dailyGoalMl, reminderMinutes } = req.body;
+  const { userId, dailyGoalMl, reminderMinutes, notificationsEnabled } = req.body;
 
   const users = readUsers();
   const user = users.find(u => u.id === userId);
@@ -181,6 +181,10 @@ app.post("/api/update-settings", (req, res) => {
 
   if (reminderMinutes !== undefined) {
     user.reminderMinutes = Number(reminderMinutes);
+  }
+
+  if (notificationsEnabled !== undefined) {
+    user.notificationsEnabled = Boolean(notificationsEnabled);
   }
 
   saveUsers(users);
